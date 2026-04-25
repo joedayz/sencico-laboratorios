@@ -153,46 +153,48 @@ aws ec2 describe-subnets --subnet-ids "$SUBNET_A" "$SUBNET_B" --query "Subnets[]
 
 **Objetivo:** desplegar un “Hello World” accesible por URL, comparar el servicio web administrado en cada nube.
 
-### 3.1 Azure: App Service (Node) + deploy zip (25–35 min)
+### 3.1 Azure: Azure Storage Static Website (25–35 min)
 
-1) Plan + Web App:
+> En algunas suscripciones (como la tuya) la cuota de App Service puede estar en **0** (Free y Basic).
+> Para garantizar que el laboratorio salga hoy sin pedir cuotas, usa **Static Website** en Storage.
 
 ```bash
-az appservice plan create -g "$AZ_RG" -n "$AZ_PLAN" --is-linux --sku B1
-az webapp create -g "$AZ_RG" -p "$AZ_PLAN" -n "$AZ_APP" --runtime "NODE:18-lts"
+export AZ_STG="st$(date +%s)"
+az storage account create -g "$AZ_RG" -n "$AZ_STG" -l "$AZ_REGION" --sku Standard_LRS
+az storage blob service-properties update --account-name "$AZ_STG" --static-website --index-document index.html
 ```
 
-2) Crear app mínima y desplegar:
+2) Subir el sitio:
 
 ```bash
-mkdir -p /tmp/azapp
-cat > /tmp/azapp/index.js <<'EOF'
-const http = require('http');
-const port = process.env.PORT || 8080;
-http.createServer((req,res)=>{ res.end("Hola desde Azure App Service\n"); }).listen(port);
+cat > /tmp/index.html <<'EOF'
+<html>
+  <body>
+    <h1>Hola desde Azure Storage Static Website</h1>
+    <p>Servicios de Aplicaciones Web (web estática)</p>
+  </body>
+</html>
 EOF
-
-cat > /tmp/azapp/package.json <<'EOF'
-{ "name":"azapp","version":"1.0.0","main":"index.js","scripts":{"start":"node index.js"} }
-EOF
-
-(cd /tmp/azapp && zip -r app.zip .)
-az webapp deployment source config-zip -g "$AZ_RG" -n "$AZ_APP" --src /tmp/azapp/app.zip
+az storage blob upload --account-name "$AZ_STG" --container-name '$web' --name index.html --file /tmp/index.html --overwrite true
 ```
 
 3) Probar:
 
 ```bash
 echo "URL Azure:"
-echo "https://$AZ_APP.azurewebsites.net"
+az storage account show -g "$AZ_RG" -n "$AZ_STG" --query "primaryEndpoints.web" -o tsv
 ```
 
-**Ejercicio extra (Azure, 5 min):** ver logs de arranque
+**Ejercicio extra (Azure, 5–10 min):** agregar un `404.html` y volver a subir
 
 ```bash
-az webapp log config -g "$AZ_RG" -n "$AZ_APP" --application-logging filesystem --level information
-az webapp log tail -g "$AZ_RG" -n "$AZ_APP"
+cat > /tmp/404.html <<'EOF'
+<html><body><h1>404</h1><p>Página no encontrada</p></body></html>
+EOF
+az storage blob upload --account-name "$AZ_STG" --container-name '$web' --name 404.html --file /tmp/404.html --overwrite true
 ```
+
+> (Opcional para después) Si logras cuota de App Service, puedes volver a intentar el lab con App Service y comparar PaaS vs web estática.
 
 ### 3.2 AWS: Elastic Beanstalk (Node) (25–35 min)
 
@@ -247,14 +249,43 @@ Usa este tiempo para comparar:
 
 ### 4.1 Azure: PostgreSQL Flexible Server + DB (15–20 min)
 
+0) Check rápido (evita errores por variables vacías):
+
+```bash
+echo "AZ_RG=$AZ_RG AZ_REGION=$AZ_REGION AZ_DB_SERVER=$AZ_DB_SERVER"
+az group create -n "$AZ_RG" -l "$AZ_REGION"
+```
+
+0.1) Si aparece `MissingSubscriptionRegistration`, registra el provider (solo 1 vez por suscripción):
+
+```bash
+az provider register --namespace Microsoft.DBforPostgreSQL
+az provider show --namespace Microsoft.DBforPostgreSQL --query "registrationState" -o tsv
+```
+
 1) Crear servidor (público para demo rápida):
 
 ```bash
 az postgres flexible-server create -g "$AZ_RG" -n "$AZ_DB_SERVER" -l "$AZ_REGION" \
   --admin-user "$AZ_DB_ADMIN" --admin-password "$AZ_DB_PASS" \
-  --sku-name Standard_B1ms --storage-size 32 --version 14 \
+  --tier Burstable --sku-name Standard_B1ms --storage-size 32 --version 14 \
   --public-access 0.0.0.0
 ```
+
+1.1) Habilitar acceso por firewall (para que `psql` no haga timeout):
+
+```bash
+export MYIP="$(curl -s ifconfig.me)"
+az postgres flexible-server firewall-rule create -g "$AZ_RG" -n "$AZ_DB_SERVER" \
+  --rule-name allow-myip --start-ip-address "$MYIP" --end-ip-address "$MYIP"
+```
+
+> Si tu IP cambia (NAT/red corporativa) o sigues con timeout, crea también la regla “Allow Azure services”:
+>
+> ```bash
+> az postgres flexible-server firewall-rule create -g "$AZ_RG" -n "$AZ_DB_SERVER" \
+>   --rule-name allow-azure --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
+> ```
 
 2) Crear base:
 
